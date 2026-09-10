@@ -1,0 +1,28 @@
+{
+  "tasks": [
+    {
+      "id": "empty_dishwasher",
+      "name": "Sp\u00fclmaschine ausr\u00e4umen",
+      "allowed_roles": ["child", "adult"],
+      "frequency": "weekly"
+    },
+    {
+      "id": "take_out_trash",
+      "name": "M\u00fcll rausbringen",
+      "allowed_roles": ["child", "adult"],
+      "frequency": "weekly"
+    },
+    {
+      "id": "clean_windows",
+      "name": "Fenster putzen",
+      "allowed_roles": ["adult"],
+      "frequency": "monthly"
+    },
+    {
+      "id": "clean_oven",
+      "name": "Backofen reinigen",
+      "allowed_roles": ["adult"],
+      "frequency": "monthly"
+    }
+  ]
+}

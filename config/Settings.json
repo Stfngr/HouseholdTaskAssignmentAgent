@@ -1,0 +1,25 @@
+{
+  "daily_execution_time": "06:00",
+  "timezone": "Europe/Berlin",
+  "tasks_per_active_day": 1,
+  "residents": [
+    {
+      "id": "alice",
+      "name": "Alice",
+      "role": "adult",
+      "off_days": ["Saturday", "Sunday"]
+    },
+    {
+      "id": "bob",
+      "name": "Bob",
+      "role": "adult",
+      "off_days": []
+    },
+    {
+      "id": "charlie",
+      "name": "Charlie",
+      "role": "child",
+      "off_days": ["Wednesday"]
+    }
+  ]
+}

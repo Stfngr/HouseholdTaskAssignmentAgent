@@ -1,0 +1,1 @@
+"""Household task assignment agent."""
