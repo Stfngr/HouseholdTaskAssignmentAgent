@@ -252,6 +252,85 @@ eine Nachricht, aber Antwort oder lokale Bestaetigung gehen verloren, kann ein
 Wiederholungsversuch ein Duplikat senden. Lokale Zuteilungen und Statistiken bleiben
 davon getrennt. Nachrichten werden als Klartext gesendet und bei Bedarf geteilt.
 
+## Docker-Betrieb
+
+Jeder Push nach `main` fuehrt Tests aus und veroeffentlicht ein ARM64-Image fuer
+einen `aarch64`-Raspberry-Pi in GitHub Container Registry:
+
+```text
+ghcr.io/stfngr/householdtaskassignmentagent:latest
+ghcr.io/stfngr/householdtaskassignmentagent:main
+ghcr.io/stfngr/householdtaskassignmentagent:sha-<commit>
+```
+
+Nach erstem Workflow-Lauf auf der Repository-Seite **Packages** Paket
+`householdtaskassignmentagent` auf **Public** setzen. Dann kann Pi Image ohne
+GitHub-Zugangsdaten laden. Unveraenderlicher SHA-Tag erlaubt gezieltes Rollback.
+
+Docker Engine nach offizieller Anleitung fuer verwendetes Pi OS installieren.
+Danach Konfiguration und persistenten Zustand auf Host anlegen. Befehle aus
+heruntergeladenem Projektverzeichnis ausfuehren:
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 /etc/household-agent/config /var/lib/household-agent
+sudo install -o 10001 -g 10001 -m 0600 .env.example /etc/household-agent/.env
+sudo install -o 10001 -g 10001 -m 0600 config/Settings.json config/tasks.json /etc/household-agent/config/
+sudoedit /etc/household-agent/.env
+sudoedit /etc/household-agent/config/Settings.json /etc/household-agent/config/tasks.json
+```
+
+Docker liest `.env` und setzt sie als Prozessumgebung; Datei wird nicht in
+Container eingebunden. Container laeuft als UID/GID `10001`, deshalb muss dieser
+Benutzer Konfigurations- und Zustandspfade besitzen.
+
+Container starten:
+
+```bash
+sudo docker pull ghcr.io/stfngr/householdtaskassignmentagent:latest
+sudo docker run -d \
+  --name household-agent \
+  --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file /etc/household-agent/.env \
+  --mount type=bind,src=/etc/household-agent/config,dst=/app/config,readonly \
+  --mount type=bind,src=/var/lib/household-agent,dst=/app/storage \
+  ghcr.io/stfngr/householdtaskassignmentagent:latest
+```
+
+Logs und Status pruefen:
+
+```bash
+sudo docker logs -f household-agent
+sudo docker ps --filter name=household-agent
+```
+
+Nach jedem veroeffentlichten Image explizit aktualisieren. State-Bind-Mount
+bleibt erhalten:
+
+```bash
+sudo docker pull ghcr.io/stfngr/householdtaskassignmentagent:latest
+sudo docker rm -f household-agent
+sudo docker run -d \
+  --name household-agent \
+  --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file /etc/household-agent/.env \
+  --mount type=bind,src=/etc/household-agent/config,dst=/app/config,readonly \
+  --mount type=bind,src=/var/lib/household-agent,dst=/app/storage \
+  ghcr.io/stfngr/householdtaskassignmentagent:latest
+```
+
+Fuer Rollback `latest` beim Pull und Run durch veroeffentlichten
+`sha-<commit>`-Tag ersetzen. Docker- und systemd-Betrieb nie gleichzeitig mit
+denselben Telegram-Zugangsdaten ausfuehren: Beide senden Nachrichten und
+schreiben getrennte Zustaende.
+
 ## systemd-Betrieb
 
 Nach Einrichtung von Konfiguration, `.env` und `storage/`:
@@ -609,6 +688,85 @@ made on a Raspberry Pi 3B with 1 GB RAM.
 but its response or local acknowledgement is lost, a retry can send a duplicate.
 Local assignments and statistics remain separate from that behavior. Messages are
 plain text and are split when needed.
+
+### Docker operation
+
+Every push to `main` runs tests and publishes an ARM64 image for an `aarch64`
+Raspberry Pi to GitHub Container Registry:
+
+```text
+ghcr.io/stfngr/householdtaskassignmentagent:latest
+ghcr.io/stfngr/householdtaskassignmentagent:main
+ghcr.io/stfngr/householdtaskassignmentagent:sha-<commit>
+```
+
+After the first workflow run, open the repository's **Packages** page and set
+the `householdtaskassignmentagent` package visibility to **Public**. The Pi can
+then pull it without GitHub credentials. The immutable SHA tag supports a
+specific rollback.
+
+Install Docker Engine using its official instructions for the target Pi OS. Then
+create host configuration and persistent state directories. Run these commands
+from the downloaded project directory:
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 /etc/household-agent/config /var/lib/household-agent
+sudo install -o 10001 -g 10001 -m 0600 .env.example /etc/household-agent/.env
+sudo install -o 10001 -g 10001 -m 0600 config/Settings.json config/tasks.json /etc/household-agent/config/
+sudoedit /etc/household-agent/.env
+sudoedit /etc/household-agent/config/Settings.json /etc/household-agent/config/tasks.json
+```
+
+Docker reads `.env` and supplies it as the container process environment; it is
+not mounted into the container. The container runs as UID/GID `10001`, so this
+user must own the configuration and state paths.
+
+Start the container:
+
+```bash
+sudo docker pull ghcr.io/stfngr/householdtaskassignmentagent:latest
+sudo docker run -d \
+  --name household-agent \
+  --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file /etc/household-agent/.env \
+  --mount type=bind,src=/etc/household-agent/config,dst=/app/config,readonly \
+  --mount type=bind,src=/var/lib/household-agent,dst=/app/storage \
+  ghcr.io/stfngr/householdtaskassignmentagent:latest
+```
+
+Inspect logs and status:
+
+```bash
+sudo docker logs -f household-agent
+sudo docker ps --filter name=household-agent
+```
+
+On each published image, update explicitly. The state bind mount remains intact:
+
+```bash
+sudo docker pull ghcr.io/stfngr/householdtaskassignmentagent:latest
+sudo docker rm -f household-agent
+sudo docker run -d \
+  --name household-agent \
+  --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file /etc/household-agent/.env \
+  --mount type=bind,src=/etc/household-agent/config,dst=/app/config,readonly \
+  --mount type=bind,src=/var/lib/household-agent,dst=/app/storage \
+  ghcr.io/stfngr/householdtaskassignmentagent:latest
+```
+
+To roll back, replace `latest` in the pull and run commands with a published
+`sha-<commit>` tag. Never run Docker and systemd deployments at the same time
+with the same Telegram credentials: both can send messages and persist separate
+state.
 
 ### systemd operation
 
