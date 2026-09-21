@@ -123,7 +123,7 @@ def new_state(today: date) -> dict:
     """Create an unconfigured first-start state; the caller logs first startup."""
     _require(type(today) is date, "today must be a date")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "started_on": today.isoformat(),
         "last_observed_date": today.isoformat(),
         "last_execution_date": None,
@@ -136,6 +136,8 @@ def new_state(today: date) -> dict:
         "config_history": [],
         "plan_context": None,
         "unassignable": [],
+        "dashboard_pending": None,
+        "dashboard_last_updated_at": None,
     }
 
 
@@ -145,9 +147,10 @@ def _validate(state):
     required = {
         "schema_version", "started_on", "last_observed_date", "last_execution_date", "availability_by_week",
         "planned_assignments", "assignment_history", "monthly_statistics", "reported_months", "outbox",
+        "dashboard_pending", "dashboard_last_updated_at",
     }
     _object(state, required, "state", {"config_history", "plan_context", "unassignable"})
-    _require(type(state["schema_version"]) is int and state["schema_version"] == 1, "Unknown state schema")
+    _require(type(state["schema_version"]) is int and state["schema_version"] == 2, "Unknown state schema")
     started = _date(state["started_on"], "started_on")
     observed = _date(state["last_observed_date"], "last_observed_date")
     _require(observed >= started, "Observation predates startup")
@@ -285,6 +288,52 @@ def _validate(state):
     _require(all(("daily", day) in references for day in executed_dates), "Executed date is missing its daily outbox message")
     _require(reported == complete_months, "Reported months disagree with complete monthly outbox messages")
 
+    last_dashboard_update = state["dashboard_last_updated_at"]
+    if last_dashboard_update is not None:
+        _string(last_dashboard_update, "dashboard_last_updated_at")
+        _require(bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?\+00:00", last_dashboard_update)), "Dashboard last update timestamp must be canonical UTC")
+        try:
+            last_dashboard_time = datetime.fromisoformat(last_dashboard_update.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise StateError("Invalid dashboard last update timestamp") from exc
+        _require(last_dashboard_time.tzinfo is not None and last_dashboard_time.utcoffset() == timedelta(0), "Dashboard last update timestamp must be UTC")
+    pending = state["dashboard_pending"]
+    if pending is not None:
+        _object(pending, {"updated_at", "payload", "attempts", "next_attempt_at"}, "dashboard_pending")
+        _string(pending["updated_at"], "dashboard updated_at")
+        _require(bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?\+00:00", pending["updated_at"])), "Dashboard updated_at must be canonical UTC")
+        try:
+            updated_at = datetime.fromisoformat(pending["updated_at"].replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise StateError("Invalid dashboard updated_at") from exc
+        _require(updated_at.tzinfo is not None and updated_at.utcoffset() == timedelta(0), "Dashboard updated_at must be UTC")
+        _require(last_dashboard_update == pending["updated_at"], "Dashboard pending timestamp mismatch")
+        payload = pending["payload"]
+        _object(payload, {"date", "residents"}, "dashboard payload")
+        payload_day = _date(payload["date"], "dashboard payload date")
+        _require(last is not None and started <= payload_day <= last, "Dashboard payload outside execution dates")
+        _require(type(payload["residents"]) is list and bool(payload["residents"]), "Dashboard residents must be a nonempty list")
+        resident_ids = set()
+        for resident in payload["residents"]:
+            _object(resident, {"id", "name", "off_day", "tasks"}, "dashboard resident")
+            _string(resident["id"], "dashboard resident ID")
+            _require(resident["id"] not in resident_ids, "Duplicate dashboard resident ID")
+            resident_ids.add(resident["id"])
+            _string(resident["name"], "dashboard resident name")
+            _require(type(resident["off_day"]) is bool, "Invalid dashboard off_day")
+            _require(type(resident["tasks"]) is list, "Dashboard tasks must be a list")
+            _require(all(type(task) is str and task.strip() for task in resident["tasks"]), "Invalid dashboard task")
+            _require(not resident["off_day"] or not resident["tasks"], "Dashboard off day has tasks")
+        _require(type(pending["attempts"]) is int and pending["attempts"] >= 0, "Invalid dashboard retry count")
+        retry = pending["next_attempt_at"]
+        if retry is not None:
+            _string(retry, "dashboard next_attempt_at")
+            try:
+                retry_at = datetime.fromisoformat(retry.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise StateError("Invalid dashboard retry timestamp") from exc
+            _require(retry_at.tzinfo is not None and retry_at.utcoffset() == timedelta(0), "Dashboard retry timestamp must be UTC")
+
 
 def _unique_object(pairs):
     result = {}
@@ -292,6 +341,18 @@ def _unique_object(pairs):
         _require(key not in result, f"Duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+def _migrate(state: dict) -> tuple[dict, bool]:
+    """Upgrade v1 only by adding an empty optional dashboard delivery slot."""
+    if (type(state) is not dict or type(state.get("schema_version")) is not int
+            or state["schema_version"] != 1):
+        return state, False
+    migrated = deepcopy(state)
+    migrated["schema_version"] = 2
+    migrated["dashboard_pending"] = None
+    migrated["dashboard_last_updated_at"] = None
+    return migrated, True
 
 
 class StateStore:
@@ -304,7 +365,10 @@ class StateStore:
         try:
             with self.path.open(encoding="utf-8") as source:
                 state = json.load(source, object_pairs_hook=_unique_object)
+            state, migrated = _migrate(state)
             _validate(state)
+            if migrated:
+                self.save(state)
             return state
         except FileNotFoundError:
             return None

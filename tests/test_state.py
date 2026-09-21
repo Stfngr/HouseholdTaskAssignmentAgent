@@ -78,11 +78,24 @@ class StateStoreTests(unittest.TestCase):
         self.store.save(state)
         self.assertEqual(self.store.load(), state)
 
+    def test_schema_one_migrates_atomically_to_schema_two(self):
+        legacy = new_state(date(2026, 9, 9))
+        legacy["schema_version"] = 1
+        del legacy["dashboard_pending"]
+        del legacy["dashboard_last_updated_at"]
+        self.store.path.parent.mkdir()
+        self.store.path.write_text(json.dumps(legacy), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertIsNone(migrated["dashboard_pending"])
+        self.assertIsNone(migrated["dashboard_last_updated_at"])
+        self.assertEqual(self.store.load(), migrated)
+
     def test_corrupt_json_duplicate_keys_and_unknown_schema(self):
         self.store.path.parent.mkdir()
         for text in (
             "", "{", "null", "[]", '{"schema_version": 1, "schema_version": 1}',
-            json.dumps(dict(new_state(date(2026, 9, 9)), schema_version=2)),
+            json.dumps(dict(new_state(date(2026, 9, 9)), schema_version=3)),
             json.dumps(dict(new_state(date(2026, 9, 9)), plan_context={"x": float("nan")})),
             json.dumps(new_state(date(2026, 9, 9))).replace('"availability_by_week": {}', '"availability_by_week": {"x": {}, "x": {}}'),
         ):

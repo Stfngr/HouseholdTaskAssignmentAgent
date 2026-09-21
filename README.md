@@ -25,7 +25,7 @@ Unterstützt wird ein Linux-Host mit ARM64-Architektur. Veröffentlicht werden
 Entwicklung werden Python 3.11+, `tzdata` und Telegram-Zugangsdaten benötigt.
 
 Direkte Laufzeitabhängigkeiten stehen in `requirements.txt`:
-`python-telegram-bot` und `python-dotenv`.
+`python-telegram-bot`, `python-dotenv` und `httpx`.
 
 ## Lokale Entwicklung und Tests
 
@@ -62,6 +62,22 @@ Kopien prüfen und Dateien atomar ersetzen; danach Container starten.
 3. Numerische Chat-ID über Telegram `getUpdates` ermitteln.
 4. `.env` aus `.env.example` anlegen; Token niemals in Logs oder Versionsverwaltung speichern.
 
+## Home-Dashboard (optional)
+
+Für `home-dashboard` beide Variablen in `.env` setzen: `DASHBOARD_URL` als reine
+`http`/`https`-Origin ohne Pfad und `DASHBOARD_TOKEN`. Fehlt eine Variable, startet
+der Agent nicht; fehlen beide, bleibt Synchronisierung deaktiviert. Der Agent sendet
+nach täglicher Buchung per `PUT` an
+`/api/v1/state/household-agent/current-tasks`, mit `Authorization: Bearer <token>`.
+
+Payload enthält UTC-`updated_at` und aktuelles Tagesdokument. Es enthält jeden
+konfigurierten Bewohner einmal, feste freie Tage mit `off_day: true` und nur heute
+atomar gebuchte Aufgaben, nie vorgeplante Aufgaben. Fehler blockieren weder Buchung
+noch Telegram; neuere Tages-Snapshots ersetzen ausstehende ältere Snapshots.
+Bei aktivierter Synchronisierung vor Containerstart einmal
+`docker network inspect bot-network >/dev/null 2>&1 || docker network create bot-network`
+ausführen und dem `docker run`-Befehl `--network bot-network` hinzufügen.
+
 ## Deployment mit Docker
 
 ### Veröffentlichte Images
@@ -84,6 +100,7 @@ Docker Engine mit Compose-Plugin auf Linux ARM64 installieren. Aus dem
 Projektverzeichnis Konfiguration und persistenten Zustand anlegen:
 
 ```bash
+sudo docker network inspect bot-network >/dev/null 2>&1 || sudo docker network create bot-network
 sudo install -d -o 10001 -g 10001 -m 0700 /etc/household-agent/config /var/lib/household-agent
 sudo install -o 10001 -g 10001 -m 0600 .env.example /etc/household-agent/.env
 sudo install -o 10001 -g 10001 -m 0600 config/Settings.json config/tasks.json /etc/household-agent/config/
@@ -106,6 +123,7 @@ sudo docker run -d \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --cap-drop ALL \
   --security-opt no-new-privileges \
+  --network bot-network \
   --env-file /etc/household-agent/.env \
   --mount type=bind,src=/etc/household-agent/config,dst=/app/config,readonly \
   --mount type=bind,src=/var/lib/household-agent,dst=/app/storage \
@@ -192,6 +210,17 @@ validate related changes together, replace files atomically, then restart it.
 Create bot with BotFather, add it to the target chat, permit sending, derive the
 numeric chat ID using `getUpdates`, and create `.env` from `.env.example`. Never
 expose the token in logs or version control.
+
+## Home Dashboard (Optional)
+
+Set both `DASHBOARD_URL` and `DASHBOARD_TOKEN` in `.env`, or set neither. The URL
+must be an `http`/`https` origin without a path. The agent issues an authenticated
+`PUT` to `/api/v1/state/household-agent/current-tasks` after each daily booking.
+The durable snapshot has an UTC `updated_at`, every configured resident exactly
+once, day-off status, and only tasks actually booked that day. Dashboard failures
+never block booking or Telegram; a newer day replaces an undelivered snapshot.
+When synchronization is enabled, create `bot-network` once and add
+`--network bot-network` to the `docker run` command.
 
 ## Deployment With Docker
 

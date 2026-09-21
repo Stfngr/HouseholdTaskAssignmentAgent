@@ -13,8 +13,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from household_agent.config import (
-    WEEKDAYS, Config, ConfigError, Resident, Settings, Task,
-    config_snapshot, load_config, load_credentials,
+    WEEKDAYS, Config, ConfigError, DashboardConfig, Resident, Settings, Task,
+    config_snapshot, load_config, load_credentials, load_dashboard_config,
 )
 
 
@@ -376,6 +376,31 @@ class CredentialsTests(unittest.TestCase):
         with patch.dict(sys.modules, {"dotenv": None}):
             with self.assertRaisesRegex(ConfigError, "python-dotenv"):
                 load_credentials(self.root)
+
+    def test_dashboard_config_is_optional_and_normalizes_origin(self):
+        dashboard_token = "d" * 32
+        environment = dict(self.env, DASHBOARD_URL="https://dashboard.example:8443/", DASHBOARD_TOKEN=dashboard_token)
+        with patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(load_dashboard_config(self.root), DashboardConfig("https://dashboard.example:8443", dashboard_token))
+        with patch.dict(os.environ, self.env, clear=True):
+            self.assertIsNone(load_dashboard_config(self.root))
+
+    def test_dashboard_config_requires_pair_and_redacts_invalid_values(self):
+        cases = (
+            {"DASHBOARD_URL": "https://dashboard.example"},
+            {"DASHBOARD_TOKEN": "secret-token"},
+            {"DASHBOARD_URL": "https://user:secret@dashboard.example", "DASHBOARD_TOKEN": "secret-token"},
+            {"DASHBOARD_URL": "https://dashboard.example/path", "DASHBOARD_TOKEN": "secret-token"},
+            {"DASHBOARD_URL": "ftp://dashboard.example", "DASHBOARD_TOKEN": "secret-token"},
+            {"DASHBOARD_URL": "https://:443", "DASHBOARD_TOKEN": "secret-token"},
+            {"DASHBOARD_URL": "https://dashboard.example", "DASHBOARD_TOKEN": "short"},
+            {"DASHBOARD_URL": "https://dashboard.example", "DASHBOARD_TOKEN": " \t"},
+        )
+        for dashboard in cases:
+            with self.subTest(dashboard=dashboard), patch.dict(os.environ, dict(self.env, **dashboard), clear=True):
+                with self.assertRaises(ConfigError) as caught:
+                    load_dashboard_config(self.root)
+                self.assertNotIn("secret", str(caught.exception))
 
 
 if __name__ == "__main__":

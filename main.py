@@ -13,7 +13,10 @@ import signal
 from zoneinfo import ZoneInfo
 
 from household_agent.allocation import monday, month_key, plan
-from household_agent.config import ConfigError, config_snapshot, load_config, load_credentials
+from household_agent.config import (
+    ConfigError, config_snapshot, load_config, load_credentials, load_dashboard_config,
+)
+from household_agent.dashboard import DashboardSender, deliver_pending, make_pending
 from household_agent.state import StateError, StateStore, new_state, reconcile
 from household_agent.telegram import (
     TelegramSender, daily_text, deliver_one, make_message, monthly_text,
@@ -57,7 +60,8 @@ def _reports(state, today):
     return candidate
 
 
-def book_day(state: dict, snapshot: dict, today: date, rng: random.Random) -> dict:
+def book_day(state: dict, snapshot: dict, today: date, rng: random.Random,
+             dashboard_updated_at: datetime | None = None) -> dict:
     """Build one atomic daily transaction, without I/O or Telegram delivery."""
     day_key = today.isoformat()
     if (day_key <= (state["last_execution_date"] or "")
@@ -119,10 +123,16 @@ def book_day(state: dict, snapshot: dict, today: date, rng: random.Random) -> di
         "daily:" + day_key, "daily", day_key,
         daily_text(today, settings["residents"], assignments, candidate["unassignable"]),
     ))
+    if dashboard_updated_at is not None:
+        candidate["dashboard_pending"] = make_pending(
+            snapshot, assignments, today, dashboard_updated_at,
+            candidate["dashboard_last_updated_at"],
+        )
+        candidate["dashboard_last_updated_at"] = candidate["dashboard_pending"]["updated_at"]
     return candidate
 
 
-async def run_cycle(state, snapshot, save, send, clock, rng):
+async def run_cycle(state, snapshot, save, send, clock, rng, dashboard_send=None):
     """Reconcile configuration, deliver reports, then commit at most one day."""
     zone = ZoneInfo(snapshot["settings"]["timezone"])
     now = clock()
@@ -138,17 +148,28 @@ async def run_cycle(state, snapshot, save, send, clock, rng):
     # A send may span midnight. Never commit with a stale date/config snapshot.
     current = clock()
     if current.astimezone(zone).date() != today:
+        if dashboard_send is not None:
+            await deliver_pending(state, dashboard_send, save, current)
         return
     if current < execution_instant(today, snapshot["settings"]["daily_execution_time"], zone):
+        if dashboard_send is not None:
+            await deliver_pending(state, dashboard_send, save, current)
         return
     if (not due or today.isoformat() < watermark
             or today.isoformat() <= (state["last_execution_date"] or "")):
+        if dashboard_send is not None:
+            await deliver_pending(state, dashboard_send, save, current)
         return
     if any(month < month_key(today) and month not in state["reported_months"]
            for month in state["monthly_statistics"]):
+        if dashboard_send is not None:
+            await deliver_pending(state, dashboard_send, save, current)
         return
-    _persist(state, book_day(state, snapshot, today, rng), save)
+    _persist(state, book_day(state, snapshot, today, rng,
+                             dashboard_updated_at=current if dashboard_send is not None else None), save)
     await deliver_one(state, send, save, clock(), local_day=today)
+    if dashboard_send is not None:
+        await deliver_pending(state, dashboard_send, save, clock())
 
 
 async def serve(root: Path):
@@ -162,36 +183,44 @@ async def serve(root: Path):
     with store.lock():
         state = store.load()
         token, chat_id = load_credentials(root)
+        dashboard_config = load_dashboard_config(root)
+        dashboard_sender = (DashboardSender(dashboard_config.origin, dashboard_config.token)
+                            if dashboard_config is not None else None)
         last_error = None
-        async with TelegramSender(token, chat_id) as sender:
-            while not stop.is_set():
-                try:
-                    snapshot = config_snapshot(load_config(root))
-                except ConfigError as error:
-                    if str(error) != last_error:
-                        LOGGER.error("Konfiguration ungueltig: %s", error)
-                        last_error = str(error)
-                    if state is not None:
-                        local_day = clock().date()
-                        if state["config_history"]:
-                            zone = ZoneInfo(state["config_history"][-1]["snapshot"]["settings"]["timezone"])
-                            local_day = clock().astimezone(zone).date()
-                        await deliver_one(state, sender.send, store.save, clock(), local_day=local_day)
-                else:
-                    if last_error:
-                        LOGGER.info("Konfiguration wieder gueltig.")
-                        last_error = None
-                    if state is None:
-                        today = clock().astimezone(ZoneInfo(snapshot["settings"]["timezone"])).date()
-                        LOGGER.warning("Erststart ohne Zustand: neue Historie wird angelegt.")
-                        candidate = reconcile(new_state(today), snapshot, today)
-                        store.save(candidate)
-                        state = candidate
-                    await run_cycle(state, snapshot, store.save, sender.send, clock, rng)
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=15)
-                except asyncio.TimeoutError:
-                    pass
+        try:
+            async with TelegramSender(token, chat_id) as sender:
+                while not stop.is_set():
+                    try:
+                        snapshot = config_snapshot(load_config(root))
+                    except ConfigError as error:
+                        if str(error) != last_error:
+                            LOGGER.error("Konfiguration ungueltig: %s", error)
+                            last_error = str(error)
+                        if state is not None:
+                            local_day = clock().date()
+                            if state["config_history"]:
+                                zone = ZoneInfo(state["config_history"][-1]["snapshot"]["settings"]["timezone"])
+                                local_day = clock().astimezone(zone).date()
+                            await deliver_one(state, sender.send, store.save, clock(), local_day=local_day)
+                    else:
+                        if last_error:
+                            LOGGER.info("Konfiguration wieder gueltig.")
+                            last_error = None
+                        if state is None:
+                            today = clock().astimezone(ZoneInfo(snapshot["settings"]["timezone"])).date()
+                            LOGGER.warning("Erststart ohne Zustand: neue Historie wird angelegt.")
+                            candidate = reconcile(new_state(today), snapshot, today)
+                            store.save(candidate)
+                            state = candidate
+                        await run_cycle(state, snapshot, store.save, sender.send, clock, rng,
+                                        dashboard_sender.send if dashboard_sender is not None else None)
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=15)
+                    except asyncio.TimeoutError:
+                        pass
+        finally:
+            if dashboard_sender is not None:
+                await dashboard_sender.close()
 
 
 def main(argv=None):

@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -45,6 +46,12 @@ class Settings:
 class Config:
     settings: Settings
     tasks: tuple[Task, ...]
+
+
+@dataclass(frozen=True)
+class DashboardConfig:
+    origin: str
+    token: str
 
 
 def _unique_object(pairs):
@@ -199,12 +206,8 @@ def config_snapshot(config: Config) -> dict:
     }
 
 
-def load_credentials(root: Path) -> tuple[str, str]:
-    """Load dotenv without overriding the environment; never expose secret values.
-
-    Chat IDs are nonzero numeric Telegram identifiers, returned as strings.
-    Token validation checks syntax only; Telegram verifies authenticity on use.
-    """
+def _load_dotenv(root: Path) -> None:
+    """Load dotenv without overriding the environment; never expose values."""
     try:
         from dotenv import load_dotenv
     except ImportError:
@@ -213,7 +216,16 @@ def load_credentials(root: Path) -> tuple[str, str]:
         load_dotenv(dotenv_path=root / ".env", override=False)
     except Exception:
         # Third-party exception messages can contain credential values.
-        raise ConfigError("Cannot load Telegram credentials from .env") from None
+        raise ConfigError("Cannot load credentials from .env") from None
+
+
+def load_credentials(root: Path) -> tuple[str, str]:
+    """Load Telegram credentials without exposing secret values.
+
+    Chat IDs are nonzero numeric Telegram identifiers, returned as strings.
+    Token validation checks syntax only; Telegram verifies authenticity on use.
+    """
+    _load_dotenv(root)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     if not re.fullmatch(r"[1-9][0-9]*:[A-Za-z0-9_-]+", token):
@@ -221,3 +233,26 @@ def load_credentials(root: Path) -> tuple[str, str]:
     if not re.fullmatch(r"-?[1-9][0-9]*", chat_id):
         raise ConfigError("TELEGRAM_CHAT_ID: required nonzero integer chat ID")
     return token, chat_id
+
+
+def load_dashboard_config(root: Path) -> DashboardConfig | None:
+    """Load optional dashboard credentials and require an HTTP(S) origin only."""
+    _load_dotenv(root)
+    url = os.environ.get("DASHBOARD_URL", "")
+    token = os.environ.get("DASHBOARD_TOKEN", "")
+    if not url and not token:
+        return None
+    if not url or not token:
+        raise ConfigError("DASHBOARD_URL and DASHBOARD_TOKEN must be set together")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise ConfigError("DASHBOARD_URL: expected an HTTP(S) origin") from None
+    if (parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or port is not None and not 1 <= port <= 65535):
+        raise ConfigError("DASHBOARD_URL: expected an HTTP(S) origin")
+    if (len(token) < 32 or not token.isascii() or any(character.isspace() for character in token)):
+        raise ConfigError("DASHBOARD_TOKEN: expected token with at least 32 ASCII non-whitespace characters")
+    return DashboardConfig(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")), token)
