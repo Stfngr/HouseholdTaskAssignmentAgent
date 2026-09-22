@@ -9,7 +9,7 @@ bleiben lokal erhalten.
 
 **Gezählt werden zugewiesene Aufgaben, nicht bestätigte Erledigungen.**
 Erledigungsbuttons, Umbuchungen, Weboberfläche und mehrere Haushalte sind nicht
-implementiert. `SPEC.md` beschreibt Zielverhalten und Abnahmekriterien.
+implementiert. Aktuelles Verhalten wird durch Implementierung und Tests definiert.
 
 ## Überblick
 
@@ -167,8 +167,8 @@ and monthly statistics in German to Telegram. Residents, roles, days off, and
 tasks are JSON configuration; state and delivery queue persist locally.
 
 **The agent counts assigned tasks, not confirmed completion.** Completion buttons,
-reassignments, web UI, and multiple households are not implemented. `SPEC.md`
-contains target behavior and acceptance criteria.
+reassignments, web UI, and multiple households are not implemented. Current
+behavior is defined by the implementation and tests.
 
 ## Overview
 
